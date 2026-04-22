@@ -5,7 +5,7 @@ import signal
 import sys
 
 redis_host = os.getenv("REDIS_HOST", "localhost")
-r = redis.Redis(host="redis_host", port=6379, decode_responses=True)
+r = redis.Redis(host=redis_host, port=6379, decode_responses=True)
 
 def process_job(job_id):
     print(f"Processing job {job_id}")
@@ -17,4 +17,4 @@ while True:
     job = r.brpop("job", timeout=5)
     if job:
         _, job_id = job
-        process_job(job_id.decode())
+        process_job(job_id)

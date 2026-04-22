@@ -1,0 +1,82 @@
+version: '3.8'
+
+networks:
+  internal-net:
+    driver: bridge
+    internal: true          # No external access to this network
+
+services:
+  redis:
+    image: redis:7-alpine
+    networks:
+      - internal-net
+    restart: unless-stopped
+    # Redis is NOT exposed on the host (no ports:)
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  api:
+    build: ./api
+    networks:
+      - internal-net
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    # No host port mapping unless you want external access – not required for internal comms
+    # (You can map 8000:8000 for testing, but the requirement didn't ask to expose)
+
+  worker:
+    build: ./worker
+    networks:
+      - internal-net
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  frontend:
+    build: ./frontend
+    networks:
+      - internal-net
+    ports:
+      - "3000:3000"          # Expose to host for user access
+    environment:
+      - API_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M

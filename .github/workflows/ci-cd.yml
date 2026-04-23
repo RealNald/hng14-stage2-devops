@@ -1,0 +1,299 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: localhost:5000
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install hadolint
+        run: |
+          sudo wget -O /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          sudo chmod +x /usr/local/bin/hadolint
+
+      - name: Lint Dockerfiles
+        run: |
+          hadolint api/Dockerfile
+          hadolint worker/Dockerfile
+          hadolint frontend/Dockerfile
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Lint Python
+        run: |
+          flake8 api/ --max-line-length=120
+          flake8 worker/ --max-line-length=120
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install eslint
+        run: npm install -g eslint
+
+      - name: Lint JavaScript
+        run: eslint frontend/app.js
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-cov pytest-mock
+          if [ -f api/requirements.txt ]; then pip install -r api/requirements.txt; fi
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest api/tests/ --cov=api --cov-report=xml --cov-report=term
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push API
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          push: true
+          tags: ${{ env.REGISTRY }}/api:${{ env.IMAGE_TAG }}, ${{ env.REGISTRY }}/api:latest
+
+      - name: Build and push Worker
+        uses: docker/build-push-action@v5
+        with:
+          context: ./worker
+          push: true
+          tags: ${{ env.REGISTRY }}/worker:${{ env.IMAGE_TAG }}, ${{ env.REGISTRY }}/worker:latest
+
+      - name: Build and push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.REGISTRY }}/frontend:${{ env.IMAGE_TAG }}, ${{ env.REGISTRY }}/frontend:latest
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Scan API image
+        run: |
+          trivy image --severity CRITICAL --exit-code 1 --format sarif -o trivy-api.sarif ${{ env.REGISTRY }}/api:${{ env.IMAGE_TAG }}
+        continue-on-error: false
+
+      - name: Scan Worker image
+        run: trivy image --severity CRITICAL --exit-code 1 --format sarif -o trivy-worker.sarif ${{ env.REGISTRY }}/worker:${{ env.IMAGE_TAG }}
+
+      - name: Scan Frontend image
+        run: trivy image --severity CRITICAL --exit-code 1 --format sarif -o trivy-frontend.sarif ${{ env.REGISTRY }}/frontend:${{ env.IMAGE_TAG }}
+
+      - name: Upload SARIF reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: '*.sarif'
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: security-scan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull images from local registry
+        run: |
+          docker pull ${{ env.REGISTRY }}/api:${{ env.IMAGE_TAG }}
+          docker pull ${{ env.REGISTRY }}/worker:${{ env.IMAGE_TAG }}
+          docker pull ${{ env.REGISTRY }}/frontend:${{ env.IMAGE_TAG }}
+
+      - name: Create test compose file
+        run: |
+          cat > docker-compose.test.yml <<EOF
+          version: '3.8'
+          services:
+            redis:
+              image: redis:7-alpine
+              healthcheck:
+                test: ["CMD", "redis-cli", "ping"]
+                interval: 5s
+                timeout: 3s
+                retries: 5
+            api:
+              image: ${{ env.REGISTRY }}/api:${{ env.IMAGE_TAG }}
+              environment:
+                - REDIS_HOST=redis
+              depends_on:
+                redis:
+                  condition: service_healthy
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+                interval: 5s
+                timeout: 3s
+                retries: 5
+            worker:
+              image: ${{ env.REGISTRY }}/worker:${{ env.IMAGE_TAG }}
+              environment:
+                - REDIS_HOST=redis
+              depends_on:
+                redis:
+                  condition: service_healthy
+            frontend:
+              image: ${{ env.REGISTRY }}/frontend:${{ env.IMAGE_TAG }}
+              ports:
+                - "3000:3000"
+              environment:
+                - API_URL=http://api:8000
+              depends_on:
+                api:
+                  condition: service_healthy
+          EOF
+
+      - name: Start stack
+        run: docker-compose -f docker-compose.test.yml up -d
+
+      - name: Wait for services healthy
+        run: |
+          for i in {1..30}; do
+            if docker-compose -f docker-compose.test.yml ps | grep -q "unhealthy"; then
+              echo "Service unhealthy"
+              docker-compose -f docker-compose.test.yml logs
+              exit 1
+            fi
+            if docker-compose -f docker-compose.test.yml ps | grep -q "Up"; then
+              echo "All services up"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Submit job and verify completion
+        run: |
+          sudo apt-get install -y jq
+          RESPONSE=$(curl -s -X POST http://localhost:3000/submit)
+          JOB_ID=$(echo $RESPONSE | jq -r '.job_id')
+          echo "Job ID: $JOB_ID"
+          for i in {1..30}; do
+            STATUS=$(curl -s http://localhost:3000/status/$JOB_ID | jq -r '.status')
+            if [ "$STATUS" == "completed" ]; then
+              echo "Job completed successfully"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Job did not complete"
+          docker-compose -f docker-compose.test.yml logs
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker-compose -f docker-compose.test.yml down -v
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: integration-test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create deploy script
+        run: |
+          cat > rolling-update.sh <<'EOF'
+          #!/bin/bash
+          set -e
+          REGISTRY="localhost:5000"
+          TAG="${{ env.IMAGE_TAG }}"
+          SERVICES="api worker frontend"
+
+          # Pull new images
+          for svc in $SERVICES; do
+            docker pull $REGISTRY/$svc:$TAG
+          done
+
+          # For each service, perform rolling update
+          for svc in $SERVICES; do
+            echo "Updating $svc..."
+            # Create new container
+            docker stop $svc-new 2>/dev/null || true
+            docker rm $svc-new 2>/dev/null || true
+            docker run -d --name $svc-new --network hng14-stage2-devops_internal-net \
+              -e REDIS_HOST=redis \
+              -e API_URL=http://api:8000 \
+              $REGISTRY/$svc:$TAG
+
+            # Wait for health check (max 60 seconds)
+            for i in {1..60}; do
+              status=$(docker inspect --format='{{.State.Health.Status}}' $svc-new 2>/dev/null || echo "no")
+              if [ "$status" = "healthy" ]; then
+                echo "$svc is healthy"
+                break
+              fi
+              if [ $i -eq 60 ]; then
+                echo "Health check failed for $svc, aborting"
+                docker stop $svc-new && docker rm $svc-new
+                exit 1
+              fi
+              sleep 1
+            done
+
+            # Swap containers
+            docker stop $svc-old 2>/dev/null || true
+            docker rename $svc $svc-old 2>/dev/null || true
+            docker rename $svc-new $svc
+            docker stop $svc-old 2>/dev/null || true
+            docker rm $svc-old 2>/dev/null || true
+          done
+          EOF
+          chmod +x rolling-update.sh
+
+      - name: Run rolling update
+        run: ./rolling-update.sh

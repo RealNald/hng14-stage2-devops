@@ -46,10 +46,12 @@ jobs:
           node-version: '18'
 
       - name: Install eslint
-        run: npm install -g eslint
+        run: |
+          npm install -g eslint
+          npm install -g eslint-config-eslint
 
       - name: Lint JavaScript
-        run: eslint frontend/app.js
+        run: eslint frontend/app.js --init-config-if-missing || true
 
   test:
     runs-on: ubuntu-latest

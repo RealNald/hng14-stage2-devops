@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-#from http import HTTPStatus
+# from http import HTTPStatus
 import redis
 import uuid
 import os
@@ -28,5 +28,4 @@ def get_job(job_id: str):
     status = r.hget(f"job:{job_id}", "status")
     if not status:
         raise HTTPException(status_code=404, detail="Job not found")
-       # return {"error": "not found"}, HTTPStatus.NOT_FOUND
     return {"job_id": job_id, "status": status}

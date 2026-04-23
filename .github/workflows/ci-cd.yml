@@ -71,7 +71,7 @@ jobs:
 
       - name: Run unit tests with coverage
         run: |
-          cd api && pytest api/test/ --cov=api --cov-report=xml --cov-report=term
+          cd api && pytest test/ --cov=api --cov-report=xml --cov-report=term
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

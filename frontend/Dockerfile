@@ -18,7 +18,7 @@ COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
 COPY --chown=appuser:appgroup app.js ./
 COPY --chown=appuser:appgroup views ./views
 # Install curl for healthcheck
-RUN apk add --no-cache curl
+RUN apk add --no-cache curl=8.5.0-r0
 
 #HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 #  CMD curl -f http://localhost:3000/health || exit 1

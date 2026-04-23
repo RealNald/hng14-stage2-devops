@@ -1,9 +1,9 @@
-import pytest
 from fastapi.testclient import TestClient
 from main import app  # your FastAPI app
-import redis
+
 
 client = TestClient(app)
+
 
 def test_create_job(mocker):
     # Mock Redis
@@ -17,12 +17,14 @@ def test_create_job(mocker):
     mock_redis.lpush.assert_called_once()
     mock_redis.hset.assert_called_once()
 
+
 def test_get_job_not_found(mocker):
     mock_redis = mocker.patch("main.r")
     mock_redis.hget.return_value = None
 
     response = client.get("/jobs/nonexistent")
     assert response.status_code == 404
+
 
 def test_get_job_found(mocker):
     mock_redis = mocker.patch("main.r")

@@ -37,8 +37,8 @@ jobs:
 
       - name: Lint Python
         run: |
-          flake8 api/ --max-line-length=120
-          flake8 worker/ --max-line-length=120
+          flake8 api/ --max-line-length=120 --exclude=venv,__pycache__
+          flake8 worker/ --max-line-length=120 --exclude=venv,__pycache__
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

@@ -2,7 +2,7 @@
 FROM python:3.12-slim
 
 # Install curl (required for healthcheck)
-RUN apt-get update && apt-get install -y --no-install-recommends curl=7.88.* \
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory inside container

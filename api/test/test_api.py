@@ -23,6 +23,7 @@ def test_get_job_not_found(mocker):
     mock_redis.hget.return_value = None
 
     response = client.get("/jobs/nonexistent")
+    print(response.status_code, response.json())
     assert response.status_code == 404
 
 
